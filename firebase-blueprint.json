@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "PricingSettings": {
+      "title": "Pricing Settings",
+      "description": "Global configuration for pricing calculations",
+      "type": "object",
+      "properties": {
+        "exchangeRate": { "type": "number" },
+        "premiumCoefficient": { "type": "number" },
+        "sgAvRatio": { "type": "number" },
+        "plannedGm2": { "type": "number" }
+      },
+      "required": ["exchangeRate", "premiumCoefficient", "sgAvRatio", "plannedGm2"]
+    },
+    "SourceMetadata": {
+      "title": "Source Metadata",
+      "description": "Information about an uploaded data source",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "headers": { "type": "array", "items": { "type": "string" } },
+        "searchColumn": { "type": "string" },
+        "priceColumn": { "type": "string" },
+        "displayColumns": { "type": "array", "items": { "type": "string" } },
+        "lastUpdated": { "type": "number" }
+      },
+      "required": ["id", "name", "headers", "searchColumn", "priceColumn", "displayColumns", "lastUpdated"]
+    },
+    "SourceRow": {
+      "title": "Source Row",
+      "description": "A single row of data from a source",
+      "type": "object",
+      "properties": {
+        "materialNo": { "type": "string" },
+        "data": { "type": "object" }
+      },
+      "required": ["materialNo", "data"]
+    }
+  },
+  "firestore": {
+    "configs/main": {
+      "schema": "PricingSettings",
+      "description": "The main pricing settings"
+    },
+    "sources/{sourceId}": {
+      "schema": "SourceMetadata",
+      "description": "Metadata for a source"
+    },
+    "sources/{sourceId}/rows/{rowId}": {
+      "schema": "SourceRow",
+      "description": "Individual data rows for efficient searching"
+    }
+  }
+}
