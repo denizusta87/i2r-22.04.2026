@@ -61,6 +61,7 @@ const DB_NAME = 'SparePartPricingDB';
 const DB_VERSION = 2;
 const SOURCES_STORE = 'sources';
 const SETTINGS_STORE = 'settings';
+const SHARED_BACKUP_ID = 'shared_master';
 
 export async function initDB(): Promise<IDBPDatabase> {
   return openDB(DB_NAME, DB_VERSION, {
@@ -130,13 +131,18 @@ export async function saveFullBackupToCloud(userId: string, settings: PricingSet
 
   console.log(`Backing up ${chunks.length} compressed chunks. Original size: ${Math.round(jsonString.length/1024)}KB, Compressed: ${Math.round(compressed.length/1024)}KB`);
 
+  // Use Shared ID instead of personal UID for global access
+  const targetId = SHARED_BACKUP_ID;
+
   // 1. Write metadata
-  const metadataPath = `backups/${userId}`;
+  const metadataPath = `backups/${targetId}`;
   try {
     await setDoc(doc(firestore, metadataPath), {
       chunkCount: chunks.length,
       updatedAt: serverTimestamp(),
-      hash: currentHash
+      hash: currentHash,
+      lastUpdatedBy: userId,
+      lastUpdatedByEmail: auth.currentUser?.email || 'unknown'
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, metadataPath);
@@ -144,7 +150,7 @@ export async function saveFullBackupToCloud(userId: string, settings: PricingSet
 
   // Save chunks sequentially with careful timing
   for (let i = 0; i < chunks.length; i++) {
-    const chunkPath = `backups/${userId}/chunks/${i}`;
+    const chunkPath = `backups/${targetId}/chunks/${i}`;
     try {
       const chunkRef = doc(firestore, chunkPath);
       // Explicitly wrap Uint8Array in Bytes for Firestore storage
@@ -158,20 +164,25 @@ export async function saveFullBackupToCloud(userId: string, settings: PricingSet
   lastSyncedHash = currentHash;
 }
 
-export async function loadFullBackupFromCloud(userId: string): Promise<{ settings: PricingSettings, sources: SourceData[] } | null> {
-  const backupPath = `backups/${userId}`;
+export async function loadFullBackupFromCloud(_userId: string): Promise<{ settings: PricingSettings, sources: SourceData[] } | null> {
+  // Always load from shared master regardless of who is entering
+  const targetId = SHARED_BACKUP_ID;
+  const backupPath = `backups/${targetId}`;
   try {
     const backupRef = doc(firestore, backupPath);
     const backupSnap = await getDoc(backupRef);
     
-    if (!backupSnap.exists()) return null;
+    if (!backupSnap.exists()) {
+      console.log("Global backup not found.");
+      return null;
+    }
     
     const { chunkCount, hash } = backupSnap.data();
     let compressedParts: Uint8Array[] = [];
     
     // Download all chunks
     for (let i = 0; i < chunkCount; i++) {
-      const chunkPath = `backups/${userId}/chunks/${i}`;
+      const chunkPath = `backups/${targetId}/chunks/${i}`;
       const chunkRef = doc(firestore, chunkPath);
       const chunkSnap = await getDoc(chunkRef);
       if (chunkSnap.exists()) {
