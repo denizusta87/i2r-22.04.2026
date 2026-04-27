@@ -9,7 +9,7 @@ import { User, signOut } from 'firebase/auth';
 import { auth, loginWithGoogle } from '../lib/firebase';
 import * as XLSX from 'xlsx';
 import { PricingSettings, SourceData } from '../types';
-import { saveSource, deleteSource, saveSettings, getSettings, getSources } from '../lib/db';
+import { saveSource, deleteSource, saveSettings, getSettings, getSources, saveFullBackupToCloud, loadFullBackupFromCloud } from '../lib/db';
 import { cn } from '../lib/utils';
 import { formatNumber } from '../lib/calculations';
 
@@ -25,7 +25,8 @@ export default function SettingsView({ settings, onUpdateSettings, sources, onUp
   const [localSettings, setLocalSettings] = useState<PricingSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
   const [uploadLoading, setUploadLoading] = useState<number | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [isPulling, setIsPulling] = useState(false);
+  const [isPushing, setIsPushing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleLogin = async () => {
@@ -41,40 +42,45 @@ export default function SettingsView({ settings, onUpdateSettings, sources, onUp
   };
 
   const handleSyncFromCloud = async () => {
-    setIsSyncing(true);
+    if (!user) return;
+    setIsPulling(true);
     try {
-      const cloudSettings = await getSettings(true);
-      if (cloudSettings) {
-        setLocalSettings(cloudSettings);
-        onUpdateSettings(cloudSettings);
-      }
-      const cloudSources = await getSources(true);
-      if (cloudSources.length > 0) {
-        onUpdateSources(cloudSources);
+      const backup = await loadFullBackupFromCloud(user.uid);
+      if (backup) {
+        // Update Local State
+        setLocalSettings(backup.settings);
+        onUpdateSettings(backup.settings);
+        onUpdateSources(backup.sources);
+        
+        // Save to IndexedDB
+        await saveSettings(backup.settings, false);
+        for (const source of backup.sources) {
+          await saveSource(source, false);
+        }
+        
+        alert('Tüm verileriniz ve ayarlarınız başarıyla geri yüklendi!');
+      } else {
+        alert('Bulutta size ait bir yedek bulunamadı.');
       }
     } catch (error) {
       console.error('Sync failed', error);
+      alert('Buluttan veri çekilirken hata oluştu.');
     } finally {
-      setIsSyncing(false);
+      setIsPulling(false);
     }
   };
 
   const handleSyncToCloud = async () => {
     if (!user) return;
-    setIsSyncing(true);
+    setIsPushing(true);
     try {
-      // Sync settings
-      await saveSettings(localSettings, true);
-      // Sync sources
-      for (const source of sources) {
-        await saveSource(source, true);
-      }
-      alert('Tüm veriler buluta başarıyla yüklendi!');
-    } catch (error) {
-      console.error('Sync to cloud failed', error);
-      alert('Buluta yükleme sırasında hata oluştu.');
+      await saveFullBackupToCloud(user.uid, localSettings, sources);
+      alert('Tüm sistem buluta yedeklendi! Artık her yerden bu verilere ulaşabilirsiniz.');
+    } catch (error: any) {
+      console.error('Backup failed', error);
+      alert(`Hata: ${error.message}`);
     } finally {
-      setIsSyncing(false);
+      setIsPushing(false);
     }
   };
 
@@ -199,18 +205,18 @@ export default function SettingsView({ settings, onUpdateSettings, sources, onUp
                 </div>
                 <button 
                   onClick={handleSyncFromCloud}
-                  disabled={isSyncing}
+                  disabled={isPulling || isPushing}
                   className="px-5 py-2.5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all flex items-center gap-2"
                 >
-                  <RefreshCw className={cn("w-4 h-4", isSyncing && "animate-spin")} />
+                  <RefreshCw className={cn("w-4 h-4", isPulling && "animate-spin")} />
                   Buluttan Çek
                 </button>
                 <button 
                   onClick={handleSyncToCloud}
-                  disabled={isSyncing}
+                  disabled={isPulling || isPushing}
                   className="px-5 py-2.5 bg-white text-blue-600 hover:bg-blue-50 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all shadow-xl flex items-center gap-2"
                 >
-                  <Upload className="w-4 h-4" />
+                  {isPushing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                   Buluta Gönder
                 </button>
                 <button 

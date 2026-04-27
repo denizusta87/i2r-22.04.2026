@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Calculator, Settings as SettingsIcon, Package, Database, Info, Loader2, Cloud, CloudOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from './lib/firebase';
 import { PricingSettings, SourceData } from './types';
 import { DEFAULT_SETTINGS } from './lib/calculations';
-import { getSettings, getSources, saveSettings } from './lib/db';
+import { getSettings, getSources, saveSettings, loadFullBackupFromCloud, saveFullBackupToCloud, saveSource } from './lib/db';
 import CalculatorView from './components/CalculatorView';
 import SettingsView from './components/SettingsView';
 import { cn } from './lib/utils';
@@ -21,37 +21,127 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
 
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error' | 'idle'>('idle');
+  const isInitialLoad = useRef(true);
+
   useEffect(() => {
     const sessionPin = sessionStorage.getItem('pin_verified');
     if (sessionPin === 'true') {
       setIsPinVerified(true);
     }
 
-    // Auth listener
-    const unsubscribe = onAuthStateChanged(auth, (authUser) => {
-      setUser(authUser);
-    });
-
-    async function loadData() {
+    async function initialLoad() {
       try {
-        // Try Cloud first if we want persistence (or fallback to local)
-        let storedSettings = await getSettings(true); // Try cloud
-        if (!storedSettings) storedSettings = await getSettings(false); // Fallback to local
+        setLoading(true);
+        // Load local data first for speed
+        const storedSettings = await getSettings(false);
         if (storedSettings) setSettings(storedSettings);
         
-        let storedSources = await getSources(true); // Try cloud
-        if (storedSources.length === 0) storedSources = await getSources(false); // Fallback to local
+        const storedSources = await getSources(false);
         setSources(storedSources);
       } catch (error) {
-        console.error('Failed to load initial data:', error);
+        console.error('Failed to load local data:', error);
       } finally {
         setLoading(false);
       }
     }
-    loadData();
+    
+    initialLoad();
+
+    // Auth listener
+    const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
+      setUser(authUser);
+      
+      if (authUser) {
+        setSyncStatus('syncing');
+        try {
+          const cloudBackup = await loadFullBackupFromCloud(authUser.uid);
+          if (cloudBackup) {
+            // Check if local is empty or it's the very first load
+            const localSources = await getSources(false);
+            if (localSources.length === 0 || isInitialLoad.current) {
+              setSettings(cloudBackup.settings);
+              setSources(cloudBackup.sources);
+              // Save to local DB
+              await saveSettings(cloudBackup.settings, false);
+              for (const s of cloudBackup.sources) {
+                await saveSource(s, false);
+              }
+              console.log("System synchronized with latest cloud backup.");
+              setSyncStatus('synced');
+            }
+          } else {
+            setSyncStatus('idle');
+          }
+        } catch (e) {
+          console.error("Auto-pull failed", e);
+          setSyncStatus('error');
+        }
+      } else {
+        setSyncStatus('idle');
+      }
+      isInitialLoad.current = false;
+    });
 
     return () => unsubscribe();
   }, []);
+
+  const isSyncing = useRef(false);
+  const lastSyncTime = useRef(0);
+
+  // Automatic Background Save to Cloud
+  useEffect(() => {
+    if (!user || isInitialLoad.current || loading) return;
+
+    const autoSave = async () => {
+      // Don't sync more than once every 60 seconds automatically, unless forced
+      const now = Date.now();
+      const lastSync = lastSyncTime.current;
+      const cooldown = syncStatus === 'error' ? 300000 : 60000; // 5 mins if error, 1 min normal
+      
+      if (now - lastSync < cooldown) {
+        return;
+      }
+
+      if (isSyncing.current) return;
+      
+      isSyncing.current = true;
+      setSyncStatus('syncing');
+      try {
+        await saveFullBackupToCloud(user.uid, settings, sources);
+        setSyncStatus('synced');
+        lastSyncTime.current = Date.now();
+      } catch (e: any) {
+        console.error("Auto-push failed", e);
+        setSyncStatus('error');
+        lastSyncTime.current = Date.now(); // Start cooldown even on error
+      } finally {
+        isSyncing.current = false;
+      }
+    };
+
+    const timer = setTimeout(autoSave, 15000); 
+    return () => clearTimeout(timer);
+  }, [settings, sources, user, syncStatus]);
+
+  const forceSync = async () => {
+    if (!user || isSyncing.current) return;
+    
+    isSyncing.current = true;
+    setSyncStatus('syncing');
+    try {
+      await saveFullBackupToCloud(user.uid, settings, sources);
+      setSyncStatus('synced');
+      lastSyncTime.current = Date.now();
+      alert("Bulut yedeklemesi başarıyla tamamlandı.");
+    } catch (e: any) {
+      console.error("Force sync failed", e);
+      setSyncStatus('error');
+      alert("Eşitleme hatası: Kota dolmuş olabilir veya bağlantı kesildi.");
+    } finally {
+      isSyncing.current = false;
+    }
+  };
 
   const handlePinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,8 +248,10 @@ export default function App() {
               <Package className="text-white w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-sm font-black tracking-tighter text-slate-900 uppercase leading-none">HC/SME-I2R AI</h1>
-              <p className="text-[10px] font-medium tracking-[0.2em] text-blue-600">PRICING 3.0</p>
+              <h1 className="text-sm font-black tracking-tighter text-slate-900 uppercase leading-none">I2R 2026 usd1iz</h1>
+              <p className="text-[9px] font-bold text-blue-600 mt-0.5 uppercase tracking-wider">
+                {new Date().toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+              </p>
             </div>
           </div>
 
@@ -188,7 +280,41 @@ export default function App() {
             </button>
           </nav>
 
-          <div className="hidden md:flex items-center gap-6">
+          <div className="hidden md:flex items-center gap-4">
+            <button
+              onClick={forceSync}
+              disabled={syncStatus === 'syncing'}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-blue-300 hover:bg-blue-50 transition-all group"
+              title="Şimdi Buluta Yedekle"
+            >
+              <AnimatePresence mode="wait">
+                {syncStatus === 'syncing' ? (
+                  <motion.div
+                    key="syncing"
+                    initial={{ rotate: 0 }}
+                    animate={{ rotate: 360 }}
+                    transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                  >
+                    <Loader2 className="w-4 h-4 text-blue-600" />
+                  </motion.div>
+                ) : syncStatus === 'synced' ? (
+                  <Cloud className="w-4 h-4 text-emerald-600" />
+                ) : (
+                  <CloudOff className="w-4 h-4 text-red-600" />
+                )}
+              </AnimatePresence>
+              <div className="flex flex-col items-start leading-none">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">Sistem</span>
+                <span className={`text-[11px] font-bold uppercase ${
+                  syncStatus === 'syncing' ? 'text-blue-600' : 
+                  syncStatus === 'synced' ? 'text-emerald-600' : 'text-red-600'
+                }`}>
+                  {syncStatus === 'syncing' ? 'Eşitleniyor' : 
+                   syncStatus === 'synced' ? 'Bulut Güncel' : 'Kota/Hata'}
+                </span>
+              </div>
+            </button>
+
             <div className="flex flex-col items-end">
               <span className="text-[10px] font-black text-slate-400 tracking-widest uppercase">Operatör</span>
               <span className="text-xs font-black text-slate-900 tracking-tight uppercase">Deniz Usta</span>
